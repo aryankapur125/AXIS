@@ -25,6 +25,7 @@
     --text:#f5f4f1;
     --text-dim:#8a8a86;
     --text-faint:#4d4d4a;
+    
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
   html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden;}
@@ -171,7 +172,7 @@
   .physique-legend{display:grid;grid-template-columns:1fr 1fr;gap:0 14px;padding:6px 20px 4px;}
   .legend-row{display:flex;justify-content:space-between;font-size:11.5px;color:var(--text-dim);border-bottom:1px solid var(--border-soft);padding:6px 0;}
   .legend-row span:last-child{color:var(--text);font-weight:700;font-variant-numeric:tabular-nums;}
-  .legend-today{color:var(--text-faint);font-weight:600;font-size:10px;}
+  .legend-today{color:#43a047;font-weight:600;font-size:10px;}
 
   /* Calendar */
   .cal-wrap{margin:10px 20px 4px;border:1px solid var(--border);border-radius:14px;background:var(--surface);padding:11px 12px 12px;}
@@ -1386,7 +1387,13 @@
       default: html = renderHome();
     }
     root.innerHTML = html + renderProgressModal() + renderNutModal() + (view.settingsModal ? renderSettingsModal() : '') + (view.muscleLogOpen ? renderMuscleLogModal() : '');
-  }
+      const appRootEl = document.getElementById('app-root');
+    if(appRootEl){
+      requestAnimationFrame(() => {
+        appRootEl.style.opacity = '0.999';
+        requestAnimationFrame(() => { appRootEl.style.opacity = '1'; });
+      });
+    }
 
   /* ---------- actions ---------- */
   const actions = {
@@ -1717,21 +1724,43 @@
     el.textContent = dist>0 ? secToMMSS(item.durationSec/dist) : '—';
   }
 
-  function ingestSyncParams(){
-    const params = new URLSearchParams(window.location.search);
-    let changed = false;
-    if(params.has('weight')){
-      const v = extractNumber(params.get('weight'));
-      if(v != null && isFinite(v) && v > 0){ state.nutrition.profile.weightKg = v; changed = true; }
-    }
-    if(params.has('sleep')){
-      const v = parseHoursFlexible(params.get('sleep'));
-      if(v != null && isFinite(v) && v > 0){ state.nutrition.profile.sleepHours = v; changed = true; }
-    }
-    if(changed){
-      saveState(true);
-      try{ window.history.replaceState(null, '', window.location.pathname); }catch(e){}
-    }
+function ingestSyncParams(){
+  const params = new URLSearchParams(window.location.search);
+  const weightVal = params.has('weight') ? extractNumber(params.get('weight')) : null;
+  const sleepVal = params.has('sleep') ? parseHoursFlexible(params.get('sleep')) : null;
+  const hasWeight = weightVal != null && isFinite(weightVal) && weightVal > 0;
+  const hasSleep = sleepVal != null && isFinite(sleepVal) && sleepVal > 0;
+  if(!hasWeight && !hasSleep) return;
+
+  if(hasWeight) state.nutrition.profile.weightKg = weightVal;
+  if(hasSleep) state.nutrition.profile.sleepHours = sleepVal;
+
+  // Patch only these two fields onto whatever is CURRENTLY persisted, rather
+  // than saving our whole in-memory `state` — which may be a just-built
+  // defaultState() if loadState() couldn't read existing data in this
+  // context. Prevents a failed/partial load from wiping real history.
+  (async () => {
+    try{
+      const res = await storageGet(STORE_KEY);
+      let target = state;
+      if(res && res.value){
+        try{
+          const parsed = JSON.parse(res.value);
+          if(parsed && Array.isArray(parsed.days) && parsed.days.length===7){
+            target = parsed;
+            if(!target.nutrition) target.nutrition = defaultNutrition();
+            if(!target.nutrition.profile) target.nutrition.profile = defaultNutrition().profile;
+          }
+        }catch(e){ /* use in-memory state as fallback */ }
+      }
+      if(hasWeight) target.nutrition.profile.weightKg = weightVal;
+      if(hasSleep) target.nutrition.profile.sleepHours = sleepVal;
+      await storageSet(STORE_KEY, JSON.stringify(target));
+    }catch(e){ /* best effort */ }
+  })();
+
+  try{ window.history.replaceState(null, '', window.location.pathname); }catch(e){}
+}
   }
 
   document.addEventListener('DOMContentLoaded', init);
@@ -1741,17 +1770,7 @@
     await loadState();
     ingestSyncParams();
     render();
-
     const root = document.getElementById('app-root');
-    // Force a repaint right after this initial load. When the page is opened
-    // programmatically (e.g. the iOS Shortcuts automation that writes weight/
-    // sleep in via URL params) WebKit can leave freshly-injected content
-    // unpainted — present and interactive in the DOM, just not drawn — until
-    // something triggers a reflow. This nudges that without any visible flash.
-    requestAnimationFrame(() => {
-      root.style.opacity = '0.999';
-      requestAnimationFrame(() => { root.style.opacity = '1'; });
-    });
     root.addEventListener('click', (e) => {
       if(e.target.classList && e.target.classList.contains('modal-overlay')){
         if(view.settingsModal) actions['close-settings']();
